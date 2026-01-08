@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- AppCompat theme REQUIRED for AppCompatActivity -->
+    <style name="Theme.MultiFactorAuthApp"
+        parent="Theme.AppCompat.Light.NoActionBar">
+
+        <item name="colorPrimary">@android:color/holo_blue_dark</item>
+        <item name="colorPrimaryDark">@android:color/holo_blue_dark</item>
+        <item name="colorAccent">@android:color/holo_blue_light</item>
+
+    </style>
+
+</resources>

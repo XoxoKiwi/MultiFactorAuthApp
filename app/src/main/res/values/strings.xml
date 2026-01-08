@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">MultiFactorAuthApp</string>
+    <string name="fingerprint_success">Fingerprint Verified ✅</string>
+    <string name="fingerprint_failed">Fingerprint Authentication Failed ❌</string>
+    <string name="keystroke_instruction">Type the following sentence exactly:</string>
+    <string name="keystroke_sentence">secure authentication</string>
+    <string name="keystroke_hint">Start typing here</string>
+    <string name="keystroke_status_empty"></string>
+    <string name="pattern_min_dots">Pattern must have at least 4 dots</string>
+    <string name="pattern_saved">Pattern saved. Draw again to verify.</string>
+    <string name="pattern_correct">Pattern correct</string>
+    <string name="pattern_wrong">Wrong pattern</string>
+
+</resources>
