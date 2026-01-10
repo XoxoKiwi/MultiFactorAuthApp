@@ -2,9 +2,7 @@ package com.example.multifactorauthapp
 
 import android.content.Intent
 import android.content.SharedPreferences
-import android.os.Bundle
-import android.os.CountDownTimer
-import android.os.SystemClock
+import android.os.*
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.inputmethod.EditorInfo
@@ -29,13 +27,11 @@ class KeystrokeAuthActivity : AppCompatActivity() {
     private var startTypingTime = 0L
     private var endTypingTime = 0L
 
-    private val enrolledSamples = mutableListOf<DoubleArray>()
-    private val requiredSamples = 5
-    private var isEnrollmentComplete = false
+    private val samples = mutableListOf<DoubleArray>()
 
-    private val maxAttempts = 10
-    private val lockDurationMs = 30_000L
-    private var lockTimer: CountDownTimer? = null
+    private var isEnrolling = true
+    private var attempts = 0
+    private var locked = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,252 +40,164 @@ class KeystrokeAuthActivity : AppCompatActivity() {
         typingField = findViewById(R.id.etTyping)
         statusText = findViewById(R.id.tvStatus)
         metricsText = findViewById(R.id.tvMetrics)
-
-        prefs = getSharedPreferences("auth_prefs", MODE_PRIVATE)
-        isEnrollmentComplete = prefs.getBoolean("ENROLLED", false)
+        prefs = getSharedPreferences("keystroke_auth", MODE_PRIVATE)
 
         QIFNN.loadModel(this)
-        updateLockState()
 
+        isEnrolling = !prefs.getBoolean("ENROLLED", false)
         statusText.text =
-            if (!isEnrollmentComplete)
-                "Enrollment: Enter SAME password ${requiredSamples} times"
+            if (isEnrolling)
+                "Enrollment: type SAME password 3 times"
             else
-                "Authentication: Enter your password"
+                "Authentication: type your password"
 
-        // ---- Collect keystroke timing ONLY ----
         typingField.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun afterTextChanged(s: Editable?) {}
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
 
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                if (isLocked()) return
-
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {
                 val now = SystemClock.elapsedRealtime()
                 if (startTypingTime == 0L) startTypingTime = now
                 if (lastKeyTime != 0L) flightTimes.add(now - lastKeyTime)
                 lastKeyTime = now
             }
+
+            override fun afterTextChanged(s: Editable?) {}
         })
 
-        // ---- Process only when DONE pressed ----
         typingField.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_DONE) {
-
-                if (isLocked()) return@setOnEditorActionListener true
-
-                val password = typingField.text.toString()
-                if (password.isEmpty()) return@setOnEditorActionListener true
-
+            if (actionId == EditorInfo.IME_ACTION_DONE && !locked) {
                 endTypingTime = SystemClock.elapsedRealtime()
-
-                if (!isEnrollmentComplete) {
-                    processEnrollmentSample(password)
-                } else {
-                    authenticateUser(password)
-                }
+                val pwd = typingField.text.toString()
+                if (isEnrolling) enroll(pwd) else authenticate(pwd)
                 true
             } else false
         }
     }
 
-    // ---------- LOCK ----------
-    private fun isLocked(): Boolean =
-        SystemClock.elapsedRealtime() < prefs.getLong("LOCK_UNTIL", 0L)
-
-    private fun updateLockState() {
-        val lockUntil = prefs.getLong("LOCK_UNTIL", 0L)
-        val remaining = lockUntil - SystemClock.elapsedRealtime()
-
-        if (remaining > 0) {
-            typingField.isEnabled = false
-            startLockCountdown(remaining)
-        } else unlock()
-    }
-
-    private fun startLockCountdown(ms: Long) {
-        lockTimer?.cancel()
-        lockTimer = object : CountDownTimer(ms, 1000) {
-            override fun onTick(millisUntilFinished: Long) {
-                statusText.text =
-                    "Locked. Try again in ${millisUntilFinished / 1000}s"
-            }
-            override fun onFinish() {
-                unlock()
-            }
-        }.start()
-    }
-
-    private fun unlock() {
-        lockTimer?.cancel()
-        prefs.edit()
-            .putLong("LOCK_UNTIL", 0L)
-            .putInt("FAIL_COUNT", 0)
-            .apply()
-
-        typingField.isEnabled = true
-    }
-
-    // ---------- ENROLLMENT ----------
-    private fun processEnrollmentSample(password: String) {
-
-        if (password.length !in 6..10) {
-            statusText.text = "Password must be 6–10 characters"
+    private fun enroll(password: String) {
+        if (password.length !in 6..10 || flightTimes.size < password.length - 2) {
+            statusText.text = "Type naturally"
             reset()
             return
         }
 
-        if (enrolledSamples.isEmpty()) {
+        if (samples.isEmpty()) {
             val salt = generateSalt()
-            val hash = hashPassword(password, salt)
             prefs.edit()
-                .putString("PWD_SALT", salt)
-                .putString("PWD_HASH", hash)
+                .putString("SALT", salt)
+                .putString("HASH", hash(password, salt))
                 .apply()
         } else {
-            val salt = prefs.getString("PWD_SALT", null) ?: return
-            val storedHash = prefs.getString("PWD_HASH", null) ?: return
-            if (hashPassword(password, salt) != storedHash) {
-                statusText.text = "Password mismatch. Restart enrollment."
-                enrolledSamples.clear()
-                prefs.edit().remove("PWD_SALT").remove("PWD_HASH").apply()
+            val salt = prefs.getString("SALT", null)!!
+            val stored = prefs.getString("HASH", null)!!
+            if (hash(password, salt) != stored) {
+                samples.clear()
+                prefs.edit().clear().apply()
+                statusText.text = "Password mismatch"
                 reset()
                 return
             }
         }
 
-        val meanFlight = flightTimes.average()
-        val stdFlight = calculateStdDev(flightTimes, meanFlight)
-        val totalTime = endTypingTime - startTypingTime
-        val speed = password.length / (totalTime / 1000.0)
+        val f = extractFeatures(password)
+        samples.add(f)
 
-        // ✅ NORMALIZED FEATURE VECTOR
-        enrolledSamples.add(
-            doubleArrayOf(
-                meanFlight / 200.0,
-                stdFlight / 100.0,
-                totalTime / 4000.0,
-                speed / 10.0
-            )
-        )
+        metricsText.text =
+            "Mean:${f[0]}\nStd:${f[1]}\nTotal:${f[2]}\nSpeed:${f[3]}"
 
+        statusText.text = "Enrollment ${samples.size}/3"
         reset()
-        statusText.text = "Enrollment ${enrolledSamples.size}/$requiredSamples"
 
-        if (enrolledSamples.size == requiredSamples) enrollUser()
-    }
-
-    private fun enrollUser() {
-        val profile = DoubleArray(4)
-        for (i in 0..3) {
-            profile[i] = enrolledSamples.map { it[i] }.average()
+        if (samples.size == 3) {
+            val profile = DoubleArray(4) { i ->
+                samples.map { it[i] }.average()
+            }
+            QIFNN.saveProfile(this, profile)
+            prefs.edit().putBoolean("ENROLLED", true).apply()
+            samples.clear()
+            isEnrolling = false
+            metricsText.text = ""
+            statusText.text = "Authenticate now"
         }
-
-        QIFNN.userProfile = profile
-        QIFNN.saveModel(this)
-
-        prefs.edit().putBoolean("ENROLLED", true).apply()
-        isEnrollmentComplete = true
-
-        enrolledSamples.clear()
-        statusText.text = "Enrollment complete. Authenticate now"
     }
 
-    // ---------- AUTH ----------
-    private fun authenticateUser(password: String) {
+    private fun authenticate(password: String) {
+        metricsText.text = ""
 
-        if (password.length !in 6..10) {
-            statusText.text = "Invalid password length"
+        val salt = prefs.getString("SALT", null) ?: return
+        val stored = prefs.getString("HASH", null) ?: return
+
+        if (hash(password, salt) != stored) {
+            fail()
             reset()
             return
         }
 
-        val salt = prefs.getString("PWD_SALT", null) ?: return
-        val storedHash = prefs.getString("PWD_HASH", null) ?: return
-
-        if (hashPassword(password, salt) != storedHash) {
-            handleFailure()
-            reset()
-            return
-        }
-
-        val meanFlight = flightTimes.average()
-        val stdFlight = calculateStdDev(flightTimes, meanFlight)
-        val totalTime = endTypingTime - startTypingTime
-        val speed = password.length / (totalTime / 1000.0)
-
-        // ✅ NORMALIZED FEATURE VECTOR
-        val success = QIFNN().authenticate(
-            doubleArrayOf(
-                meanFlight / 200.0,
-                stdFlight / 100.0,
-                totalTime / 4000.0,
-                speed / 10.0
-            )
-        )
-
+        val success = QIFNN.authenticate(extractFeatures(password))
         if (success) {
-            prefs.edit().putInt("FAIL_COUNT", 0).apply()
+            attempts = 0
             startActivity(Intent(this, AccessGrantedActivity::class.java))
             finish()
         } else {
-            handleFailure()
+            fail()
         }
-
         reset()
     }
 
-    // ---------- FAILURE ----------
-    private fun handleFailure() {
-        val fails = prefs.getInt("FAIL_COUNT", 0) + 1
-        prefs.edit().putInt("FAIL_COUNT", fails).apply()
-
-        if (fails >= maxAttempts) {
-            prefs.edit()
-                .putLong("LOCK_UNTIL",
-                    SystemClock.elapsedRealtime() + lockDurationMs)
-                .apply()
-            updateLockState()
-        } else {
-            statusText.text =
-                "Access denied (${maxAttempts - fails} attempts left)"
-        }
+    private fun fail() {
+        attempts++
+        if (attempts >= 3) startLockout()
+        else statusText.text = "Access denied (${3 - attempts} left)"
     }
 
-    // ---------- PASSWORD HASH ----------
-    private fun generateSalt(): String {
-        val salt = ByteArray(16)
-        SecureRandom().nextBytes(salt)
-        return Base64.encodeToString(salt, Base64.NO_WRAP)
+    private fun startLockout() {
+        locked = true
+        typingField.isEnabled = false
+        object : CountDownTimer(30_000, 1_000) {
+            override fun onTick(ms: Long) {
+                statusText.text = "Locked ${ms / 1000}s"
+            }
+
+            override fun onFinish() {
+                locked = false
+                attempts = 0
+                typingField.isEnabled = true
+                statusText.text = "Try again"
+            }
+        }.start()
     }
 
-    private fun hashPassword(password: String, saltBase64: String): String {
-        val salt = Base64.decode(saltBase64, Base64.NO_WRAP)
-        val spec = PBEKeySpec(password.toCharArray(), salt, 10000, 256)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        return Base64.encodeToString(
-            factory.generateSecret(spec).encoded,
-            Base64.NO_WRAP
+    private fun extractFeatures(password: String): DoubleArray {
+        val mean = flightTimes.average()
+        val std = sqrt(flightTimes.map { (it - mean) * (it - mean) }.average())
+        val total = (endTypingTime - startTypingTime).coerceAtLeast(400)
+        val speed = password.length / (total / 1000.0)
+
+        return doubleArrayOf(
+            mean / 240.0,
+            std / 120.0,
+            total / 5200.0,
+            speed / 11.5
         )
     }
 
-    // ---------- UTIL ----------
     private fun reset() {
         flightTimes.clear()
-        lastKeyTime = 0L
-        startTypingTime = 0L
-        endTypingTime = 0L
+        lastKeyTime = 0
+        startTypingTime = 0
+        endTypingTime = 0
         typingField.text.clear()
     }
 
-    private fun calculateStdDev(values: List<Long>, mean: Double): Double {
-        var sum = 0.0
-        for (v in values) sum += (v - mean) * (v - mean)
-        return sqrt(sum / values.size)
+    private fun generateSalt(): String {
+        val b = ByteArray(16)
+        SecureRandom().nextBytes(b)
+        return Base64.encodeToString(b, Base64.NO_WRAP)
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        lockTimer?.cancel()
+    private fun hash(p: String, s: String): String {
+        val spec = PBEKeySpec(p.toCharArray(), Base64.decode(s, Base64.NO_WRAP), 10000, 256)
+        val f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        return Base64.encodeToString(f.generateSecret(spec).encoded, Base64.NO_WRAP)
     }
 }

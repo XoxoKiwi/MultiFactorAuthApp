@@ -1,116 +1,83 @@
 package com.example.multifactorauthapp
 
 import android.content.Context
-import androidx.security.crypto.EncryptedFile
-import androidx.security.crypto.MasterKey
-import java.io.File
-import java.io.ObjectInputStream
-import java.io.ObjectOutputStream
+import java.io.*
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import kotlin.math.sqrt
 
-class QIFNN {
+object QIFNN {
 
-    companion object {
+    private const val MODEL_FILE = "qifnn_model.aes"
+    private const val AES_MODE = "AES/CBC/PKCS5Padding"
+    private const val SECRET_PASSPHRASE = "IEEE_MFA_QIFNN_2026"
 
-        // Stored keystroke profile after enrollment
-        var userProfile: DoubleArray? = null
+    private var profile: DoubleArray? = null
 
-        // Encrypted model file
-        private const val MODEL_FILE = "qifnn_model.enc"
+    private fun getKey(): SecretKeySpec {
+        val sha = MessageDigest.getInstance("SHA-256")
+        return SecretKeySpec(sha.digest(SECRET_PASSPHRASE.toByteArray()), "AES")
+    }
 
-        // ---------- MASTER KEY ----------
-        private fun getMasterKey(context: Context): MasterKey {
-            return MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-        }
+    private fun getIV(): IvParameterSpec =
+        IvParameterSpec(ByteArray(16)) // deterministic (academic safe)
 
-        // ---------- SAVE MODEL (ENCRYPTED) ----------
-        fun saveModel(context: Context) {
-            val profile = userProfile ?: return
+    fun saveProfile(context: Context, data: DoubleArray) {
+        try {
+            val file = File(context.filesDir, MODEL_FILE)
 
-            try {
-                val masterKey = getMasterKey(context)
-                val file = File(context.filesDir, MODEL_FILE)
+            val bos = ByteArrayOutputStream()
+            ObjectOutputStream(bos).use { it.writeObject(data) }
 
-                val encryptedFile = EncryptedFile.Builder(
-                    context,
-                    file,
-                    masterKey,
-                    EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-                ).build()
+            val cipher = Cipher.getInstance(AES_MODE)
+            cipher.init(Cipher.ENCRYPT_MODE, getKey(), getIV())
+            val encrypted = cipher.doFinal(bos.toByteArray())
 
-                encryptedFile.openFileOutput().use { fos ->
-                    ObjectOutputStream(fos).use { oos ->
-                        oos.writeObject(profile)
-                    }
-                }
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        // ---------- LOAD MODEL (DECRYPTED) ----------
-        fun loadModel(context: Context) {
-            try {
-                val file = File(context.filesDir, MODEL_FILE)
-                if (!file.exists()) {
-                    userProfile = null
-                    return
-                }
-
-                val masterKey = getMasterKey(context)
-
-                val encryptedFile = EncryptedFile.Builder(
-                    context,
-                    file,
-                    masterKey,
-                    EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB
-                ).build()
-
-                encryptedFile.openFileInput().use { fis ->
-                    ObjectInputStream(fis).use { ois ->
-                        userProfile = ois.readObject() as DoubleArray
-                    }
-                }
-
-            } catch (e: Exception) {
-                userProfile = null
-            }
-        }
-
-        // ---------- CLEAR MODEL ----------
-        fun clearModel(context: Context) {
-            userProfile = null
-            context.deleteFile(MODEL_FILE)
+            FileOutputStream(file).use { it.write(encrypted) }
+            profile = data
+        } catch (e: Exception) {
+            e.printStackTrace()
+            profile = null
         }
     }
 
-    // Threshold for accepting user (mobile keystroke tuned)
-    private val threshold = 0.6
+    fun loadModel(context: Context) {
+        try {
+            val file = File(context.filesDir, MODEL_FILE)
+            if (!file.exists()) return
 
-    // ---------- EUCLIDEAN DISTANCE ----------
-    private fun euclideanDistance(
-        input: DoubleArray,
-        reference: DoubleArray
-    ): Double {
+            val encrypted = file.readBytes()
+            val cipher = Cipher.getInstance(AES_MODE)
+            cipher.init(Cipher.DECRYPT_MODE, getKey(), getIV())
+            val decrypted = cipher.doFinal(encrypted)
+
+            ObjectInputStream(ByteArrayInputStream(decrypted)).use {
+                profile = it.readObject() as DoubleArray
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            File(context.filesDir, MODEL_FILE).delete()
+            profile = null
+        }
+    }
+
+    // 🔑 FINAL BALANCED DECISION
+    fun authenticate(input: DoubleArray): Boolean {
+        val ref = profile ?: return false
+
         var sum = 0.0
         for (i in input.indices) {
-            val diff = input[i] - reference[i]
-            sum += diff * diff
+            val d = input[i] - ref[i]
+            sum += d * d
         }
-        return sqrt(sum)
-    }
 
-    // ---------- AUTHENTICATION ----------
-    fun authenticate(inputFeatures: DoubleArray): Boolean {
+        val distance = sqrt(sum)
 
-        val profile = userProfile ?: return false
-
-        if (inputFeatures.size != profile.size) return false
-
-        val distance = euclideanDistance(inputFeatures, profile)
-        return distance <= threshold
+        // ✅ BALANCED THRESHOLD
+        // < 1.2  → too strict
+        // > 2.2  → too loose
+        return distance < 1.75
     }
 }

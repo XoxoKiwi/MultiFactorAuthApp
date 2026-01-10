@@ -2,6 +2,7 @@ package com.example.multifactorauthapp
 
 import android.content.Context
 import android.graphics.*
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -15,6 +16,7 @@ class PatternView @JvmOverloads constructor(
     private val gridSize = 3
     private val dots = mutableListOf<PointF>()
     private val selectedDots = mutableListOf<Int>()
+    private val timestamps = mutableListOf<Long>()
 
     private val dotRadius = 18f
     private val ringRadius = 36f
@@ -24,9 +26,8 @@ class PatternView @JvmOverloads constructor(
     private var currentY = 0f
     private var isDrawing = false
 
-    var onPatternComplete: ((List<Int>) -> Unit)? = null
+    var onPatternComplete: ((List<Int>, List<Long>) -> Unit)? = null
 
-    // Paints
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.GRAY
         style = Paint.Style.FILL
@@ -46,41 +47,33 @@ class PatternView @JvmOverloads constructor(
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
         dots.clear()
-
         val gapX = w / (gridSize + 1f)
         val gapY = h / (gridSize + 1f)
 
-        for (row in 1..gridSize) {
-            for (col in 1..gridSize) {
-                dots.add(PointF(col * gapX, row * gapY))
+        for (r in 1..gridSize) {
+            for (c in 1..gridSize) {
+                dots.add(PointF(c * gapX, r * gapY))
             }
         }
     }
 
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-
-        // Draw connecting lines
         for (i in 0 until selectedDots.size - 1) {
             val p1 = dots[selectedDots[i]]
             val p2 = dots[selectedDots[i + 1]]
             canvas.drawLine(p1.x, p1.y, p2.x, p2.y, linePaint)
         }
 
-        // Draw finger-following line
         if (isDrawing && selectedDots.isNotEmpty()) {
             val last = dots[selectedDots.last()]
             canvas.drawLine(last.x, last.y, currentX, currentY, linePaint)
         }
 
-        // Draw dots + rings
-        dots.forEachIndexed { index, point ->
-            canvas.drawCircle(point.x, point.y, dotRadius, dotPaint)
-
-            if (selectedDots.contains(index)) {
-                canvas.drawCircle(point.x, point.y, ringRadius, ringPaint)
+        dots.forEachIndexed { i, p ->
+            canvas.drawCircle(p.x, p.y, dotRadius, dotPaint)
+            if (selectedDots.contains(i)) {
+                canvas.drawCircle(p.x, p.y, ringRadius, ringPaint)
             }
         }
     }
@@ -95,22 +88,30 @@ class PatternView @JvmOverloads constructor(
                 isDrawing = true
                 detectDot(currentX, currentY)
             }
-
             MotionEvent.ACTION_UP -> {
                 isDrawing = false
-                onPatternComplete?.invoke(selectedDots.toList())
+                performClick()
+                onPatternComplete?.invoke(
+                    selectedDots.toList(),
+                    timestamps.toList()
+                )
             }
         }
         invalidate()
         return true
     }
 
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
     private fun detectDot(x: Float, y: Float) {
-        dots.forEachIndexed { index, point ->
+        dots.forEachIndexed { index, p ->
             if (!selectedDots.contains(index)) {
-                val d = hypot(x - point.x, y - point.y)
-                if (d < hitRadius) {
+                if (hypot(x - p.x, y - p.y) < hitRadius) {
                     selectedDots.add(index)
+                    timestamps.add(SystemClock.elapsedRealtime())
                 }
             }
         }
@@ -118,6 +119,7 @@ class PatternView @JvmOverloads constructor(
 
     fun clearPattern() {
         selectedDots.clear()
+        timestamps.clear()
         invalidate()
     }
 }
