@@ -4,53 +4,51 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="24dp">
+    android:padding="24dp"
+    android:gravity="center_horizontal"
+    android:background="#121212">
 
-    <!-- ✅ UPDATED INSTRUCTION -->
     <TextView
-        android:id="@+id/tvInstruction"
+        android:id="@+id/tvKeystrokeStatus"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Enter your password (6–10 characters)"
-        android:textSize="16sp" />
+        android:text="Enter password to Enroll"
+        android:textColor="#00FFFF"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="24dp"/>
 
-    <!-- ❌ REMOVE SENTENCE COMPLETELY -->
-    <!-- Password is user-defined, so no sentence should be shown -->
-
-    <!-- ✅ PASSWORD FIELD WITH DOTS + EYE ICON -->
     <com.google.android.material.textfield.TextInputLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        app:endIconMode="password_toggle">
+        android:layout_marginTop="8dp"
+        android:textColorHint="#AAAAAA"
+        app:boxStrokeColor="#00FFFF"
+        app:hintTextColor="#00FFFF"
+        app:endIconMode="password_toggle"
+        app:endIconTint="#FFFFFF">
 
         <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/etTyping"
+            android:id="@+id/etPassword"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:minHeight="48dp"
-            android:padding="12dp"
+            android:minHeight="55dp"
             android:hint="Password"
             android:inputType="textPassword"
-            android:password="true"
-            android:imeOptions="actionDone"
-            android:importantForAutofill="no" />
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#333333"
+            android:imeOptions="actionDone" />
     </com.google.android.material.textfield.TextInputLayout>
 
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="wrap_content"
+    <Button
+        android:id="@+id/btnSubmit"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text=""
-        android:layout_marginTop="16dp" />
-
-    <TextView
-        android:id="@+id/tvMetrics"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text=""
-        android:textSize="14sp"
-        android:textColor="#555555"
-        android:layout_marginTop="12dp" />
+        android:text="Verify Rhythm"
+        android:layout_marginTop="24dp"
+        android:backgroundTint="#00FFFF"
+        android:textColor="#000000"
+        android:textStyle="bold"
+        android:padding="12dp"/>
 
 </LinearLayout>

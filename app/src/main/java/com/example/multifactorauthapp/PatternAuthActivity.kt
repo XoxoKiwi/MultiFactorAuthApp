@@ -1,168 +1,73 @@
 package com.example.multifactorauthapp
 
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Bundle
-import android.os.CountDownTimer
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import kotlin.math.sqrt
-import java.security.MessageDigest
+import com.example.multifactorauthapp.PatternView.OnPatternListener
+import kotlin.math.*
 
 class PatternAuthActivity : AppCompatActivity() {
-
-    private lateinit var statusText: TextView
+    private lateinit var tvStatus: TextView
     private lateinit var patternView: PatternView
     private lateinit var prefs: SharedPreferences
-
-    private val enrollSamples = mutableListOf<DoubleArray>()
     private var attempts = 0
-    private var locked = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_pattern_auth)
 
-        statusText = findViewById(R.id.tvPatternStatus)
+        tvStatus = findViewById(R.id.tvPatternStatus)
         patternView = findViewById(R.id.patternView)
-        prefs = getSharedPreferences("pattern_auth", MODE_PRIVATE)
+        prefs = getSharedPreferences("MFA_PREFS", Context.MODE_PRIVATE)
 
-        updateStatus()
+        patternView.setOnPatternListener(object : OnPatternListener {
+            override fun onPatternDetected(ids: List<Int>, timestamps: List<Long>) {
+                val hash = ids.joinToString("-")
+                val diffs = ArrayList<Long>()
+                for (i in 0 until timestamps.size - 1) {
+                    diffs.add(timestamps[i+1] - timestamps[i])
+                }
 
-        patternView.onPatternComplete = { pattern, times ->
+                val meanSpeed = diffs.average()
 
-            if (locked) {
-                reset()
-            } else if (pattern.size < 4 || times.size < 2) {
-                statusText.text = "Draw naturally"
-                reset()
-            } else {
-                val hash = hash(pattern.joinToString("-"))
-                val features = extractFeatures(times)
-
-                val enrolled = prefs.getBoolean("PATTERN_ENROLLED", false)
-
-                if (!enrolled) {
-                    handleEnrollment(hash, features)
+                if (prefs.contains("PATTERN_HASH")) {
+                    verifyPattern(hash, meanSpeed)
                 } else {
-                    handleVerification(hash, features)
+                    prefs.edit().putString("PATTERN_HASH", hash)
+                        .putFloat("PATTERN_SPEED", meanSpeed.toFloat()).apply()
+                    recreate()
                 }
             }
-        }
+        })
     }
 
-    // ---------------- ENROLLMENT ----------------
-
-    private fun handleEnrollment(hash: String, features: DoubleArray) {
-        val storedHash = prefs.getString("PATTERN_HASH", null)
-
-        if (enrollSamples.isEmpty()) {
-            prefs.edit().putString("PATTERN_HASH", hash).apply()
-        } else if (hash != storedHash) {
-            enrollSamples.clear()
-            statusText.text = "Pattern mismatch. Restart enrollment"
-            reset()
-            return
-        }
-
-        enrollSamples.add(features)
-        statusText.text = "Enroll pattern (${enrollSamples.size}/3)"
-        reset()
-
-        if (enrollSamples.size == 3) {
-            val avg = DoubleArray(3) { i ->
-                enrollSamples.map { it[i] }.average()
-            }
-
-            prefs.edit()
-                .putString("PATTERN_PROFILE", avg.joinToString(","))
-                .putBoolean("PATTERN_ENROLLED", true)
-                .apply()
-
-            enrollSamples.clear()
-            statusText.text = "Verify your pattern"
-        }
-    }
-
-    // ---------------- VERIFICATION ----------------
-
-    private fun handleVerification(hash: String, features: DoubleArray) {
-        val storedHash = prefs.getString("PATTERN_HASH", null)
-        val profileStr = prefs.getString("PATTERN_PROFILE", null) ?: return
+    private fun verifyPattern(hash: String, inputSpeed: Double) {
+        val storedHash = prefs.getString("PATTERN_HASH", "")
+        val storedSpeed = prefs.getFloat("PATTERN_SPEED", 0f).toDouble()
 
         if (hash != storedHash) {
-            failAttempt()
+            tvStatus.text = "Wrong Shape!"
             return
         }
 
-        val ref = profileStr.split(",").map { it.toDouble() }.toDoubleArray()
-
-        var sum = 0.0
-        for (i in features.indices) {
-            val d = features[i] - ref[i]
-            sum += d * d
+        // STRICT ASYMMETRIC BIAS for Pattern
+        val speedDiff = inputSpeed - storedSpeed
+        val isVerified = if (speedDiff > 0) {
+            speedDiff < (storedSpeed * 0.15) // VERY STRICT SLOW LIMIT (15%)
+        } else {
+            abs(speedDiff) < (storedSpeed * 0.40) // LENIENT FAST LIMIT (40%)
         }
 
-        if (sqrt(sum) < 1.0) {
-            attempts = 0
+        if (isVerified) {
             startActivity(Intent(this, KeystrokeAuthActivity::class.java))
             finish()
         } else {
-            failAttempt()
+            attempts++
+            tvStatus.text = "Rhythm Mismatch! (Too slow/hesitant)"
+            patternView.clearPattern()
         }
-    }
-
-    // ---------------- LOCKOUT ----------------
-
-    private fun failAttempt() {
-        attempts++
-        if (attempts >= 3) {
-            locked = true
-            object : CountDownTimer(30_000, 1_000) {
-                override fun onTick(ms: Long) {
-                    statusText.text = "Locked. Try again in ${ms / 1000}s"
-                }
-
-                override fun onFinish() {
-                    locked = false
-                    attempts = 0
-                    statusText.text = "Verify your pattern"
-                }
-            }.start()
-        } else {
-            statusText.text = "Wrong pattern (${3 - attempts} attempts left)"
-            reset()
-        }
-    }
-
-    // ---------------- UTILS ----------------
-
-    private fun extractFeatures(times: List<Long>): DoubleArray {
-        val gaps = times.zipWithNext { a, b -> b - a }
-        val mean = gaps.average()
-        val std = sqrt(gaps.map { (it - mean) * (it - mean) }.average())
-        val total = times.last() - times.first()
-
-        return doubleArrayOf(
-            mean / 300.0,
-            std / 200.0,
-            total / 3000.0
-        )
-    }
-
-    private fun reset() {
-        patternView.postDelayed({ patternView.clearPattern() }, 400)
-    }
-
-    private fun updateStatus() {
-        val enrolled = prefs.getBoolean("PATTERN_ENROLLED", false)
-        statusText.text =
-            if (enrolled) "Verify your pattern"
-            else "Enroll pattern (1/3)"
-    }
-
-    private fun hash(s: String): String {
-        val d = MessageDigest.getInstance("SHA-256")
-        return d.digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 }

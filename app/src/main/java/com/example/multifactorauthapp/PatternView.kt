@@ -1,125 +1,146 @@
 package com.example.multifactorauthapp
 
 import android.content.Context
-import android.graphics.*
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
-import kotlin.math.hypot
+import kotlin.math.pow
+import kotlin.math.sqrt
 
-class PatternView @JvmOverloads constructor(
-    context: Context,
-    attrs: AttributeSet? = null
-) : View(context, attrs) {
+class PatternView(context: Context, attrs: AttributeSet) : View(context, attrs) {
 
-    private val gridSize = 3
-    private val dots = mutableListOf<PointF>()
-    private val selectedDots = mutableListOf<Int>()
-    private val timestamps = mutableListOf<Long>()
+    // Interface to talk to Activity
+    interface OnPatternListener {
+        fun onPatternDetected(ids: List<Int>, timestamps: List<Long>)
+    }
 
-    private val dotRadius = 18f
-    private val ringRadius = 36f
-    private val hitRadius = 50f
+    private var listener: OnPatternListener? = null
+    private val dots = ArrayList<Dot>()
+    private val path = ArrayList<Dot>() // Ordered list of connected dots
+    private val currentPathIds = ArrayList<Int>() // IDs for quick lookup
+    private val currentPathTimes = ArrayList<Long>()
 
-    private var currentX = 0f
-    private var currentY = 0f
-    private var isDrawing = false
-
-    var onPatternComplete: ((List<Int>, List<Long>) -> Unit)? = null
-
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.GRAY
+    // 1. The Solid White Dot
+    private val paintDot = Paint().apply {
+        color = Color.WHITE
         style = Paint.Style.FILL
+        isAntiAlias = true
     }
 
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+    // 2. The Cyan Line
+    private val paintLine = Paint().apply {
+        color = Color.CYAN
+        strokeWidth = 10f
         style = Paint.Style.STROKE
-        strokeWidth = 5f
-    }
-
-    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        strokeWidth = 8f
-        style = Paint.Style.STROKE
+        isAntiAlias = true
         strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    // 3. NEW: The Outer Ring Effect (Visual Feedback)
+    private val paintRing = Paint().apply {
+        color = Color.parseColor("#AA00FFFF") // Semi-transparent Cyan
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        isAntiAlias = true
+    }
+
+    fun setOnPatternListener(listener: OnPatternListener) {
+        this.listener = listener
+    }
+
+    fun clearPattern() {
+        path.clear()
+        currentPathIds.clear()
+        currentPathTimes.clear()
+        invalidate()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
         dots.clear()
-        val gapX = w / (gridSize + 1f)
-        val gapY = h / (gridSize + 1f)
 
-        for (r in 1..gridSize) {
-            for (c in 1..gridSize) {
-                dots.add(PointF(c * gapX, r * gapY))
+        // Calculate grid positions
+        val spacing = w / 4f
+        val startY = (h - w) / 2f
+
+        var id = 1
+        for (row in 1..3) {
+            for (col in 1..3) {
+                val x = col * spacing
+                val y = startY + (row * spacing)
+                dots.add(Dot(id++, x, y))
             }
         }
     }
 
     override fun onDraw(canvas: Canvas) {
-        for (i in 0 until selectedDots.size - 1) {
-            val p1 = dots[selectedDots[i]]
-            val p2 = dots[selectedDots[i + 1]]
-            canvas.drawLine(p1.x, p1.y, p2.x, p2.y, linePaint)
+        super.onDraw(canvas)
+
+        // A. Draw Lines connecting the dots
+        if (path.isNotEmpty()) {
+            for (i in 0 until path.size - 1) {
+                canvas.drawLine(path[i].x, path[i].y, path[i+1].x, path[i+1].y, paintLine)
+            }
+
+            // Draw line from last dot to current finger position (Optional, improves feel)
+            // requires tracking touch X/Y globally, but skipping for simplicity here.
         }
 
-        if (isDrawing && selectedDots.isNotEmpty()) {
-            val last = dots[selectedDots.last()]
-            canvas.drawLine(last.x, last.y, currentX, currentY, linePaint)
-        }
+        // B. Draw Dots
+        for (dot in dots) {
+            // 1. Draw the standard white dot
+            canvas.drawCircle(dot.x, dot.y, 20f, paintDot)
 
-        dots.forEachIndexed { i, p ->
-            canvas.drawCircle(p.x, p.y, dotRadius, dotPaint)
-            if (selectedDots.contains(i)) {
-                canvas.drawCircle(p.x, p.y, ringRadius, ringPaint)
+            // 2. NEW: If this dot is selected, draw the "Outer Ring"
+            if (currentPathIds.contains(dot.id)) {
+                // Radius 50f creates a nice ring around the 20f dot
+                canvas.drawCircle(dot.x, dot.y, 50f, paintRing)
             }
         }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        currentX = event.x
-        currentY = event.y
+        if (!isEnabled) return false
+
+        val x = event.x
+        val y = event.y
 
         when (event.action) {
-            MotionEvent.ACTION_DOWN,
-            MotionEvent.ACTION_MOVE -> {
-                isDrawing = true
-                detectDot(currentX, currentY)
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                for (dot in dots) {
+                    // If dot is not already in path and finger is close enough
+                    if (!currentPathIds.contains(dot.id) && isTouching(dot, x, y)) {
+                        path.add(dot)
+                        currentPathIds.add(dot.id)
+                        currentPathTimes.add(SystemClock.elapsedRealtime())
+
+                        // Trigger haptic feedback (vibration) if available
+                        performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+
+                        invalidate() // Redraw to show the new line/ring
+                    }
+                }
+                return true
             }
             MotionEvent.ACTION_UP -> {
-                isDrawing = false
-                performClick()
-                onPatternComplete?.invoke(
-                    selectedDots.toList(),
-                    timestamps.toList()
-                )
-            }
-        }
-        invalidate()
-        return true
-    }
-
-    override fun performClick(): Boolean {
-        super.performClick()
-        return true
-    }
-
-    private fun detectDot(x: Float, y: Float) {
-        dots.forEachIndexed { index, p ->
-            if (!selectedDots.contains(index)) {
-                if (hypot(x - p.x, y - p.y) < hitRadius) {
-                    selectedDots.add(index)
-                    timestamps.add(SystemClock.elapsedRealtime())
+                if (currentPathIds.isNotEmpty()) {
+                    listener?.onPatternDetected(ArrayList(currentPathIds), ArrayList(currentPathTimes))
                 }
+                return true
             }
         }
+        return false
     }
 
-    fun clearPattern() {
-        selectedDots.clear()
-        timestamps.clear()
-        invalidate()
+    private fun isTouching(dot: Dot, x: Float, y: Float): Boolean {
+        val dist = sqrt((x - dot.x).pow(2) + (y - dot.y).pow(2))
+        return dist < 60 // Touch target size
     }
+
+    data class Dot(val id: Int, val x: Float, val y: Float)
 }
