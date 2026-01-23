@@ -4,10 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.os.CountDownTimer
 import android.text.Editable
 import android.text.TextWatcher
 import android.widget.*
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.textfield.TextInputEditText
 
@@ -19,7 +19,10 @@ class KeystrokeAuthActivity : AppCompatActivity() {
 
     private val flightTimes = ArrayList<Long>()
     private var lastKeyDownTime: Long = 0
+
     private var failAttempts = 0
+    private var isSuccess = false
+    private var lockoutTimer: CountDownTimer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,10 +33,17 @@ class KeystrokeAuthActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvKeystrokeStatus)
         prefs = getSharedPreferences("MFA_PREFS", Context.MODE_PRIVATE)
 
+        // FIX 1: Prevent Android from restoring old password text after recreate()
+        etPassword.isSaveEnabled = false
+
+        checkExistingLockout()
+
         updateUI()
         setupTracking()
 
         btnSubmit.setOnClickListener {
+            if (!etPassword.isEnabled) return@setOnClickListener
+
             val password = etPassword.text.toString()
             if (password.length < 4) return@setOnClickListener
 
@@ -42,10 +52,19 @@ class KeystrokeAuthActivity : AppCompatActivity() {
             val currentProfile = QIFNN.KeystrokeProfile(mean, std)
 
             if (prefs.contains("KEYSTROKE_MEAN_FLIGHT")) {
-                handleVerification(currentProfile)
+                handleVerification(password, currentProfile)
             } else {
-                enrollUser(currentProfile)
+                enrollUser(password, currentProfile)
             }
+        }
+    }
+
+    private fun checkExistingLockout() {
+        val unlockTime = prefs.getLong("LOCKOUT_END_TIME_KEY", 0L) // Different key for Keystroke
+        val remaining = unlockTime - System.currentTimeMillis()
+
+        if (remaining > 0) {
+            startLockoutTimer(remaining)
         }
     }
 
@@ -64,42 +83,95 @@ class KeystrokeAuthActivity : AppCompatActivity() {
         })
     }
 
-    private fun handleVerification(input: QIFNN.KeystrokeProfile) {
-        val stored = QIFNN.KeystrokeProfile(
+    private fun handleVerification(inputPass: String, inputProfile: QIFNN.KeystrokeProfile) {
+        val storedPass = prefs.getString("KEYSTROKE_PASSWORD", "")
+        val storedProfile = QIFNN.KeystrokeProfile(
             prefs.getFloat("KEYSTROKE_MEAN_FLIGHT", 0f).toDouble(),
             prefs.getFloat("KEYSTROKE_STD_FLIGHT", 0f).toDouble()
         )
 
-        if (QIFNN.verify(input, stored, failAttempts)) {
-            // SUCCESS: Learn only now
-            val updated = QIFNN.updateProfile(stored, input)
-            saveProfile(updated)
+        if (inputPass != storedPass) {
+            handleFailure("Wrong Password Text!")
+            return
+        }
+
+        if (QIFNN.verify(inputProfile, storedProfile, failAttempts)) {
+            isSuccess = true
+            val updated = QIFNN.updateProfile(storedProfile, inputProfile)
+            saveProfile(inputPass, updated)
             startActivity(Intent(this, AccessGrantedActivity::class.java))
             finish()
         } else {
-            failAttempts++
-            tvStatus.text = "Security Tightened! Attempt $failAttempts"
-            resetData()
+            handleFailure("Rhythm Mismatch! (Are you the owner?)")
         }
     }
 
-    private fun enrollUser(profile: QIFNN.KeystrokeProfile) {
-        saveProfile(profile)
+    private fun handleFailure(reason: String) {
+        failAttempts++
+        resetData()
+
+        if (failAttempts >= 3) {
+            val lockoutDuration = 30000L
+            val unlockTime = System.currentTimeMillis() + lockoutDuration
+            prefs.edit().putLong("LOCKOUT_END_TIME_KEY", unlockTime).apply()
+
+            startLockoutTimer(lockoutDuration)
+        } else {
+            tvStatus.text = "$reason (Attempts: $failAttempts/3)"
+        }
+    }
+
+    private fun startLockoutTimer(durationMillis: Long) {
+        etPassword.isEnabled = false
+        btnSubmit.isEnabled = false
+
+        lockoutTimer?.cancel()
+        lockoutTimer = object : CountDownTimer(durationMillis, 1000) {
+            override fun onTick(millisUntilFinished: Long) {
+                tvStatus.text = "LOCKED OUT: ${millisUntilFinished / 1000}s"
+            }
+
+            override fun onFinish() {
+                prefs.edit().remove("LOCKOUT_END_TIME_KEY").apply()
+                failAttempts = 0
+                etPassword.isEnabled = true
+                btnSubmit.isEnabled = true
+                tvStatus.text = "Try Again"
+            }
+        }.start()
+    }
+
+    private fun enrollUser(password: String, profile: QIFNN.KeystrokeProfile) {
+        saveProfile(password, profile)
+        // Ensure text is cleared logic handles by recreate + isSaveEnabled=false
         recreate()
     }
 
-    private fun saveProfile(p: QIFNN.KeystrokeProfile) {
-        prefs.edit().putFloat("KEYSTROKE_MEAN_FLIGHT", p.meanFlight.toFloat())
-            .putFloat("KEYSTROKE_STD_FLIGHT", p.stdFlight.toFloat()).apply()
+    private fun saveProfile(password: String, p: QIFNN.KeystrokeProfile) {
+        prefs.edit()
+            .putString("KEYSTROKE_PASSWORD", password)
+            .putFloat("KEYSTROKE_MEAN_FLIGHT", p.meanFlight.toFloat())
+            .putFloat("KEYSTROKE_STD_FLIGHT", p.stdFlight.toFloat())
+            .apply()
     }
 
     private fun updateUI() {
-        tvStatus.text = if (prefs.contains("KEYSTROKE_MEAN_FLIGHT")) "Verify Rhythm" else "Enroll Rhythm"
+        tvStatus.text = if (prefs.contains("KEYSTROKE_MEAN_FLIGHT")) "Verify Rhythm" else "Enroll Password & Rhythm"
     }
 
     private fun resetData() {
         flightTimes.clear()
         lastKeyDownTime = 0
         etPassword.setText("")
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        if (!isSuccess) {
+            val intent = Intent(this, MainActivity::class.java)
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            startActivity(intent)
+            finish()
+        }
     }
 }

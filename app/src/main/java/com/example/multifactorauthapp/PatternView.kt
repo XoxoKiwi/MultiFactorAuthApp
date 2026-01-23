@@ -13,27 +13,26 @@ import kotlin.math.sqrt
 
 class PatternView(context: Context, attrs: AttributeSet) : View(context, attrs) {
 
-    // Interface to talk to Activity
     interface OnPatternListener {
         fun onPatternDetected(ids: List<Int>, timestamps: List<Long>)
     }
 
     private var listener: OnPatternListener? = null
     private val dots = ArrayList<Dot>()
-    private val path = ArrayList<Dot>() // Ordered list of connected dots
-    private val currentPathIds = ArrayList<Int>() // IDs for quick lookup
+    private val path = ArrayList<Dot>()
+    private val currentPathIds = ArrayList<Int>()
     private val currentPathTimes = ArrayList<Long>()
 
-    // 1. The Solid White Dot
+    // 1. Dots remain BLACK for contrast
     private val paintDot = Paint().apply {
-        color = Color.WHITE
+        color = Color.BLACK
         style = Paint.Style.FILL
         isAntiAlias = true
     }
 
-    // 2. The Cyan Line
+    // 2. Lines changed to LIGHT BLUE (Deep Sky Blue)
     private val paintLine = Paint().apply {
-        color = Color.CYAN
+        color = Color.parseColor("#00BFFF") // Light Blue
         strokeWidth = 10f
         style = Paint.Style.STROKE
         isAntiAlias = true
@@ -41,9 +40,9 @@ class PatternView(context: Context, attrs: AttributeSet) : View(context, attrs) 
         strokeJoin = Paint.Join.ROUND
     }
 
-    // 3. NEW: The Outer Ring Effect (Visual Feedback)
+    // 3. Ring changed to Semi-Transparent Light Blue
     private val paintRing = Paint().apply {
-        color = Color.parseColor("#AA00FFFF") // Semi-transparent Cyan
+        color = Color.parseColor("#8800BFFF") // Transparent Light Blue
         style = Paint.Style.STROKE
         strokeWidth = 4f
         isAntiAlias = true
@@ -63,11 +62,8 @@ class PatternView(context: Context, attrs: AttributeSet) : View(context, attrs) 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         dots.clear()
-
-        // Calculate grid positions
         val spacing = w / 4f
         val startY = (h - w) / 2f
-
         var id = 1
         for (row in 1..3) {
             for (col in 1..3) {
@@ -80,25 +76,14 @@ class PatternView(context: Context, attrs: AttributeSet) : View(context, attrs) 
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-
-        // A. Draw Lines connecting the dots
         if (path.isNotEmpty()) {
             for (i in 0 until path.size - 1) {
                 canvas.drawLine(path[i].x, path[i].y, path[i+1].x, path[i+1].y, paintLine)
             }
-
-            // Draw line from last dot to current finger position (Optional, improves feel)
-            // requires tracking touch X/Y globally, but skipping for simplicity here.
         }
-
-        // B. Draw Dots
         for (dot in dots) {
-            // 1. Draw the standard white dot
             canvas.drawCircle(dot.x, dot.y, 20f, paintDot)
-
-            // 2. NEW: If this dot is selected, draw the "Outer Ring"
             if (currentPathIds.contains(dot.id)) {
-                // Radius 50f creates a nice ring around the 20f dot
                 canvas.drawCircle(dot.x, dot.y, 50f, paintRing)
             }
         }
@@ -106,23 +91,17 @@ class PatternView(context: Context, attrs: AttributeSet) : View(context, attrs) 
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled) return false
-
         val x = event.x
         val y = event.y
-
         when (event.action) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 for (dot in dots) {
-                    // If dot is not already in path and finger is close enough
                     if (!currentPathIds.contains(dot.id) && isTouching(dot, x, y)) {
                         path.add(dot)
                         currentPathIds.add(dot.id)
                         currentPathTimes.add(SystemClock.elapsedRealtime())
-
-                        // Trigger haptic feedback (vibration) if available
                         performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-
-                        invalidate() // Redraw to show the new line/ring
+                        invalidate()
                     }
                 }
                 return true
@@ -139,7 +118,7 @@ class PatternView(context: Context, attrs: AttributeSet) : View(context, attrs) 
 
     private fun isTouching(dot: Dot, x: Float, y: Float): Boolean {
         val dist = sqrt((x - dot.x).pow(2) + (y - dot.y).pow(2))
-        return dist < 60 // Touch target size
+        return dist < 60
     }
 
     data class Dot(val id: Int, val x: Float, val y: Float)
