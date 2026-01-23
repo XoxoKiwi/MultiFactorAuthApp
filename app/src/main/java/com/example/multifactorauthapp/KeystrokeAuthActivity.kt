@@ -33,34 +33,34 @@ class KeystrokeAuthActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvKeystrokeStatus)
         prefs = getSharedPreferences("MFA_PREFS", Context.MODE_PRIVATE)
 
-        // FIX 1: Prevent Android from restoring old password text after recreate()
+        // Fix: Don't let Android auto-fill old password on recreate
         etPassword.isSaveEnabled = false
 
         checkExistingLockout()
-
         updateUI()
         setupTracking()
 
         btnSubmit.setOnClickListener {
             if (!etPassword.isEnabled) return@setOnClickListener
 
-            val password = etPassword.text.toString()
-            if (password.length < 4) return@setOnClickListener
+            val passwordRaw = etPassword.text.toString()
+            if (passwordRaw.length < 4) return@setOnClickListener
 
+            // Calculate Math (QIFNN)
             val mean = if(flightTimes.isNotEmpty()) flightTimes.average() else 0.0
             val std = QIFNN.calculateStdDev(flightTimes, mean)
             val currentProfile = QIFNN.KeystrokeProfile(mean, std)
 
-            if (prefs.contains("KEYSTROKE_MEAN_FLIGHT")) {
-                handleVerification(password, currentProfile)
+            if (prefs.contains("KEYSTROKE_HASH")) {
+                handleVerification(passwordRaw, currentProfile)
             } else {
-                enrollUser(password, currentProfile)
+                enrollUser(passwordRaw, currentProfile)
             }
         }
     }
 
     private fun checkExistingLockout() {
-        val unlockTime = prefs.getLong("LOCKOUT_END_TIME_KEY", 0L) // Different key for Keystroke
+        val unlockTime = prefs.getLong("LOCKOUT_END_TIME_KEY", 0L)
         val remaining = unlockTime - System.currentTimeMillis()
 
         if (remaining > 0) {
@@ -84,21 +84,34 @@ class KeystrokeAuthActivity : AppCompatActivity() {
     }
 
     private fun handleVerification(inputPass: String, inputProfile: QIFNN.KeystrokeProfile) {
-        val storedPass = prefs.getString("KEYSTROKE_PASSWORD", "")
+        val storedHash = prefs.getString("KEYSTROKE_HASH", "")
+
+        // 1. Hash the Input Password
+        val inputHash = SecurityUtils.hash(inputPass)
+
+        // 2. Compare Hashes
+        if (inputHash != storedHash) {
+            handleFailure("Wrong Password Text!")
+            return
+        }
+
+        // 3. Compare Rhythm (QIFNN)
         val storedProfile = QIFNN.KeystrokeProfile(
             prefs.getFloat("KEYSTROKE_MEAN_FLIGHT", 0f).toDouble(),
             prefs.getFloat("KEYSTROKE_STD_FLIGHT", 0f).toDouble()
         )
 
-        if (inputPass != storedPass) {
-            handleFailure("Wrong Password Text!")
-            return
-        }
-
         if (QIFNN.verify(inputProfile, storedProfile, failAttempts)) {
             isSuccess = true
+            // Update Profile (Learning)
             val updated = QIFNN.updateProfile(storedProfile, inputProfile)
-            saveProfile(inputPass, updated)
+
+            // Only update the math stats, don't need to re-save password hash if it's correct
+            prefs.edit()
+                .putFloat("KEYSTROKE_MEAN_FLIGHT", updated.meanFlight.toFloat())
+                .putFloat("KEYSTROKE_STD_FLIGHT", updated.stdFlight.toFloat())
+                .apply()
+
             startActivity(Intent(this, AccessGrantedActivity::class.java))
             finish()
         } else {
@@ -142,21 +155,20 @@ class KeystrokeAuthActivity : AppCompatActivity() {
     }
 
     private fun enrollUser(password: String, profile: QIFNN.KeystrokeProfile) {
-        saveProfile(password, profile)
-        // Ensure text is cleared logic handles by recreate + isSaveEnabled=false
+        // Hash the password before saving
+        val passHash = SecurityUtils.hash(password)
+
+        prefs.edit()
+            .putString("KEYSTROKE_HASH", passHash)
+            .putFloat("KEYSTROKE_MEAN_FLIGHT", profile.meanFlight.toFloat())
+            .putFloat("KEYSTROKE_STD_FLIGHT", profile.stdFlight.toFloat())
+            .apply()
+
         recreate()
     }
 
-    private fun saveProfile(password: String, p: QIFNN.KeystrokeProfile) {
-        prefs.edit()
-            .putString("KEYSTROKE_PASSWORD", password)
-            .putFloat("KEYSTROKE_MEAN_FLIGHT", p.meanFlight.toFloat())
-            .putFloat("KEYSTROKE_STD_FLIGHT", p.stdFlight.toFloat())
-            .apply()
-    }
-
     private fun updateUI() {
-        tvStatus.text = if (prefs.contains("KEYSTROKE_MEAN_FLIGHT")) "Verify Rhythm" else "Enroll Password & Rhythm"
+        tvStatus.text = if (prefs.contains("KEYSTROKE_HASH")) "Verify Rhythm" else "Enroll Password & Rhythm"
     }
 
     private fun resetData() {

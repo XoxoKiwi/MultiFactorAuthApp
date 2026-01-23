@@ -15,7 +15,6 @@ class PatternAuthActivity : AppCompatActivity() {
     private lateinit var patternView: PatternView
     private lateinit var prefs: SharedPreferences
 
-    // Security Vars
     private var failedAttempts = 0
     private var isSuccess = false
     private var lockoutTimer: CountDownTimer? = null
@@ -28,25 +27,32 @@ class PatternAuthActivity : AppCompatActivity() {
         patternView = findViewById(R.id.patternView)
         prefs = getSharedPreferences("MFA_PREFS", Context.MODE_PRIVATE)
 
-        checkExistingLockout() // CHECK LOCKOUT ON STARTUP
+        checkExistingLockout()
 
         patternView.setOnPatternListener(object : OnPatternListener {
             override fun onPatternDetected(ids: List<Int>, timestamps: List<Long>) {
                 if (!patternView.isEnabled) return
 
-                val hash = ids.joinToString("-")
+                // 1. Create the plain string "1-2-5-9"
+                val rawPattern = ids.joinToString("-")
+
+                // 2. Hash it immediately (SHA-256)
+                val hashedPattern = SecurityUtils.hash(rawPattern)
+
+                // Calculate Rhythm (Math stays raw)
                 val diffs = ArrayList<Long>()
                 for (i in 0 until timestamps.size - 1) {
                     diffs.add(timestamps[i+1] - timestamps[i])
                 }
-
                 val meanSpeed = diffs.average()
 
                 if (prefs.contains("PATTERN_HASH")) {
-                    verifyPattern(hash, meanSpeed)
+                    verifyPattern(hashedPattern, meanSpeed)
                 } else {
-                    prefs.edit().putString("PATTERN_HASH", hash)
+                    // Enroll: Save Hash + Speed
+                    prefs.edit().putString("PATTERN_HASH", hashedPattern)
                         .putFloat("PATTERN_SPEED", meanSpeed.toFloat()).apply()
+
                     tvStatus.text = "Pattern Saved! Draw again to verify."
                     patternView.clearPattern()
                     recreate()
@@ -64,11 +70,12 @@ class PatternAuthActivity : AppCompatActivity() {
         }
     }
 
-    private fun verifyPattern(hash: String, inputSpeed: Double) {
+    private fun verifyPattern(inputHash: String, inputSpeed: Double) {
         val storedHash = prefs.getString("PATTERN_HASH", "")
         val storedSpeed = prefs.getFloat("PATTERN_SPEED", 0f).toDouble()
 
-        var isValidShape = (hash == storedHash)
+        // Compare HASHES, not raw patterns
+        val isValidShape = (inputHash == storedHash)
         var isValidRhythm = false
 
         if (isValidShape) {
@@ -94,7 +101,6 @@ class PatternAuthActivity : AppCompatActivity() {
         patternView.clearPattern()
 
         if (failedAttempts >= 3) {
-            // Save Future Unlock Time
             val lockoutDuration = 30000L
             val unlockTime = System.currentTimeMillis() + lockoutDuration
             prefs.edit().putLong("LOCKOUT_END_TIME", unlockTime).apply()
@@ -106,7 +112,7 @@ class PatternAuthActivity : AppCompatActivity() {
     }
 
     private fun startLockoutTimer(durationMillis: Long) {
-        patternView.isEnabled = false // Disable input
+        patternView.isEnabled = false
 
         lockoutTimer?.cancel()
         lockoutTimer = object : CountDownTimer(durationMillis, 1000) {
@@ -115,7 +121,7 @@ class PatternAuthActivity : AppCompatActivity() {
             }
 
             override fun onFinish() {
-                prefs.edit().remove("LOCKOUT_END_TIME").apply() // Clear stored lockout
+                prefs.edit().remove("LOCKOUT_END_TIME").apply()
                 failedAttempts = 0
                 patternView.isEnabled = true
                 tvStatus.text = "Try Again"
@@ -125,6 +131,7 @@ class PatternAuthActivity : AppCompatActivity() {
 
     override fun onRestart() {
         super.onRestart()
+        // If user left app without success, force restart from Fingerprint
         if (!isSuccess) {
             val intent = Intent(this, MainActivity::class.java)
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
